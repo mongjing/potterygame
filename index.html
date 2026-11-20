@@ -55,6 +55,12 @@
   #bgLayer > * { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: none; }
   #bgLayer[data-bg="room"] #room, #bgLayer[data-bg="photo"] #photo { display: block; }
   #freeze { position: absolute; z-index: 6; display: none; left: var(--arL); top: var(--arT); width: var(--arW); height: var(--arH); border-radius: var(--arR); object-fit: cover; }
+  /* 手機拍完照：點「Save photo」存到相簿，或點「Next」直接下一步 */
+  #mSave { position: absolute; z-index: 8; display: none; gap: 14px; transform: translateX(-50%); left: var(--msL); top: var(--msT); }
+  #mSave.show { display: flex; animation: popIn 0.6s cubic-bezier(.2, 1.5, .4, 1); }
+  #mSave button { white-space: nowrap; font: 700 17px Georgia, serif; padding: 12px 22px; border-radius: 16px; color: #2c2a28; box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.5), 0 4px 10px rgba(70, 50, 35, 0.25); }
+  #mSaveBtn { background: #ec9a8d; }
+  #mNextBtn { background: #ebe6de; color: #3f6a46; }
   #freeze.show { display: block; animation: freeze 1.6s ease-out forwards; }
   @keyframes freeze { 0% { transform: scale(1); } 20% { transform: scale(1.03) rotate(-0.6deg); } 100% { transform: scale(1) rotate(0); } }
 
@@ -63,7 +69,8 @@
   /* 開洞、塑形：左下角的鏡頭小視窗，直角、淡淡的邊框 */
   #cam.pip { display: block; z-index: 5; left: var(--pipL); top: var(--pipT); width: var(--pipW); height: var(--pipH); object-fit: cover;
              border: 3px solid rgba(255, 255, 255, 0.55); box-shadow: 0 6px 18px rgba(70, 50, 35, 0.18); opacity: 0.9; }
-  #app:not([data-stage="depth"]):not([data-stage="shape"]) #cam.pip { display: none; }
+  /* 其他頁不顯示小視窗，但不能用 display:none（iPhone 會停止更新鏡頭畫面，手勢就偵測不到） */
+  #app:not([data-stage="depth"]):not([data-stage="shape"]) #cam.pip { opacity: 0; left: 0; top: 0; width: 2px; height: 2px; border: 0; box-shadow: none; pointer-events: none; }
 
   /* ---------- 燒窯（之後放 kiln.mp4 就會播你的動畫，沒有跳過） ---------- */
   /* 燒窯動畫：影片本身不顯示，由 #kilnAnim 畫布把黑底去掉後畫在紙張背景上 */
@@ -144,6 +151,7 @@
   <div id="kilnScene"><div class="wob"><img src="assets/website3.webp" alt=""><div class="glow"></div></div></div>
   <div id="front" class="frame"></div>
   <img id="freeze" alt="">
+  <div id="mSave"><button id="mSaveBtn">Save photo</button><button id="mNextBtn">Next</button></div>
   <video id="kilnVideo" playsinline muted preload="auto"></video>
   <canvas id="kilnAnim"></canvas>
   <div id="firing"><span>Firing… <b id="firePct">0%</b></span><i><em id="fireBar"></em></i></div>
@@ -187,6 +195,16 @@ const KILN_CROP = { x: 248 / 1080, y: 114 / 1080, w: 512 / 1080, h: 922 / 1080 }
 let kilnPlays = 0;
 const PROMO_VIDEO = '';          // 動畫短片：之後貼上 YouTube 連結，或放 mp4 檔名（例如 'promo.mp4'）
 const ML5_URL = 'https://unpkg.com/ml5@1.2.1/dist/ml5.min.js';
+// 手機、平板：用比較輕的手部模型、較低的鏡頭解析度，不開頭部追蹤；存檔要用「點一下」觸發
+const IS_MOBILE = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1) || matchMedia('(pointer: coarse)').matches;
+const DEBUG = /[?&]debug/.test(location.search);   // 網址加上 ?debug 會在畫面左下顯示偵測狀態，方便找問題
+function dbg(msg) {
+  if (!DEBUG) return;
+  let el = document.getElementById('dbg');
+  if (!el) { el = document.createElement('pre'); el.id = 'dbg'; el.style.cssText = 'position:fixed;left:6px;bottom:6px;z-index:99;margin:0;padding:6px 8px;max-width:90vw;font:11px/1.35 monospace;background:rgba(0,0,0,.65);color:#9f9;border-radius:6px;white-space:pre-wrap;pointer-events:none'; document.body.appendChild(el); }
+  el.textContent = (el.textContent + '\n' + msg).split('\n').slice(-10).join('\n');
+}
+window.addEventListener('error', e => dbg('ERR ' + e.message));
 const N = 72, SEG = 56;
 const H_START = 280, H_MIN = 190, H_MAX = 400, HEIGHT_K = 0.55;   // 高度隨體積守恆調整的範圍
 const BASE_Y = 150, OFFSET_Y = 34;
@@ -295,6 +313,7 @@ function updateView(dt) {
 
 async function enableHead() {
   if (!window.ml5 || !ml5.faceMesh) return;
+  if (IS_MOBILE) return;   // 手機拿在手上會一直晃，而且同時跑兩個模型太吃效能，所以手機不開頭部追蹤
   try {
     faceModel = ml5.faceMesh({ maxFaces: 1, refineLandmarks: false, flipped: false }, () => {
       faceReady = true;
@@ -702,6 +721,7 @@ function buildLayers() {
 // 點到的那一層先「捏扁再彈回」，再執行動作
 function fire(el, act) {
   el.classList.remove('press'); void el.offsetWidth; el.classList.add('press');
+  if (IS_MOBILE && act === 'stl') return ACTIONS[act]();   // 手機存檔一定要在點擊當下執行
   setTimeout(() => ACTIONS[act](), 140);
 }
 function squishRole(role) {
@@ -796,6 +816,7 @@ function layoutFrame() {
   Object.assign($('kilnAnim').style, { left: sqL + KILN_CROP.x * ka + 'px', top: sqT + KILN_CROP.y * ka + 'px', width: KILN_CROP.w * ka + 'px', height: KILN_CROP.h * ka + 'px' });
   Object.assign($('firing').style, { left: fx(0.5) + 'px', top: sqT + (KILN_CROP.y + KILN_CROP.h) * ka + (portrait ? 24 : 14) + 'px', width: Math.min(440, w * (portrait ? 0.7 : 0.3)) + 'px' });
   Object.assign($('count').style, { left: b.x + b.w / 2 + 'px', top: b.y + b.h / 2 + 'px' });
+  r.setProperty('--msL', b.x + b.w / 2 + 'px'); r.setProperty('--msT', b.y + b.h - 66 + 'px');
   if (stage === 'ar') clipCanvas();
 }
 function fx(u) { return frame.x + frame.w * u; }
@@ -1414,7 +1435,7 @@ function gestureMap() {
     shape: { thumbs: nextStage },
     reveal: { thumbs: nextStage, one: refire },
     ar: { peace: startCountdown },
-    download: { thumbs: downloadSTL },
+    download: IS_MOBILE ? {} : { thumbs: downloadSTL },   // 手機要用點的才能存檔
   }[stage] || {};
 }
 
@@ -1646,8 +1667,11 @@ function loadScript(src) {
 async function enableHands() {
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { cameraBlocked(); return false; }
   try {
-    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
+    const size = IS_MOBILE ? { width: { ideal: 640 }, height: { ideal: 480 } } : { width: { ideal: 1280 }, height: { ideal: 720 } };
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', ...size }, audio: false });
+    dbg('camera ok');
   } catch (e) {
+    dbg('camera blocked: ' + (e && e.name));
     cameraBlocked();
     return false;
   }
@@ -1659,19 +1683,26 @@ async function enableHands() {
     v.addEventListener('loadeddata', res, { once: true });
     setTimeout(res, 3000);
   });
-  v.play().catch(() => {});
-  // ml5 會讀 video 的 width/height 屬性；沒設的話是 0，就偵測不到手
-  v.width = v.videoWidth || 640;
-  v.height = v.videoHeight || 480;
+  try { await v.play(); } catch (e) { dbg('video play: ' + e.name); }
+  // ml5 會讀 video 的 width/height 屬性；沒設的話是 0，就偵測不到手。手機轉向時尺寸會變，要跟著更新
+  const fit = () => { if (v.videoWidth) { v.width = v.videoWidth; v.height = v.videoHeight; } };
+  fit();
+  if (!v.width) { v.width = 640; v.height = 480; }
+  v.addEventListener('resize', fit);
+  dbg('video ' + v.width + 'x' + v.height);
   handOn = true;
   setStatus();
   toast('Loading hand tracking…');
   try {
     if (!window.ml5) await loadScript(ML5_URL);
-    handPose = ml5.handPose({ maxHands: 2, flipped: false }, () => {
+    dbg('ml5 loaded');
+    const opts = IS_MOBILE ? { maxHands: 2, flipped: false, modelType: 'lite' } : { maxHands: 2, flipped: false };
+    handPose = ml5.handPose(opts, () => {
+      dbg('hand model ready');
       handReady = true;
       setStatus();
-      handPose.detectStart(v, r => { hands = r; });
+      let nh = -1;
+      handPose.detectStart(v, r => { hands = r; if (DEBUG && r.length !== nh) { nh = r.length; dbg('hands: ' + nh); } });
       enableHead();
       toast('Show both hands to the camera');
     });
@@ -2012,6 +2043,7 @@ function capture() {
     img.src = img.dataset.url;
     img.classList.remove('show'); void img.offsetWidth; img.classList.add('show');
     squishRole('shutter');
+    if (IS_MOBILE) { $('mSave').classList.add('show'); return; }   // 手機：要點一下才能存照片
     await saveFile(bl, `PalmKiln-No${glaze.seed}.png`);
     setTimeout(() => { img.classList.remove('show'); shooting = false; setStage('download'); }, 1700);
   }, 'image/png');
@@ -2026,12 +2058,23 @@ function getDownloads() {
   return dlPromise;
 }
 
-async function saveFile(blob, name) {
-  const dl = await getDownloads();
-  if (dl) {
-    try { await dl.save({ filename: name, data: blob }); return true; }
-    catch (e) { return false; }
+function saveFile(blob, name) {
+  // 在 Claude 預覽裡用它的下載功能
+  if (window.claude && typeof window.claude.use === 'function') {
+    return getDownloads().then(dl => dl ? dl.save({ filename: name, data: blob }).then(() => true, () => false) : anchorSave(blob, name));
   }
+  // 手機：跳出分享選單（iPhone 可以「儲存影像」到相簿、「儲存到檔案」）
+  if (IS_MOBILE && navigator.share && navigator.canShare) {
+    for (const type of [blob.type, 'application/octet-stream']) {
+      const file = new File([blob], name, { type });
+      if (navigator.canShare({ files: [file] })) {
+        return navigator.share({ files: [file] }).then(() => true, e => (e && e.name === 'AbortError' ? false : anchorSave(blob, name)));
+      }
+    }
+  }
+  return Promise.resolve(anchorSave(blob, name));
+}
+function anchorSave(blob, name) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
@@ -2039,7 +2082,7 @@ async function saveFile(blob, name) {
   document.body.appendChild(a);
   a.click();
   a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 4000);
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
   return true;
 }
 
@@ -2158,7 +2201,15 @@ async function startPlay() {
   }
 }
 
+function mobileSaveDone() {
+  $('mSave').classList.remove('show');
+  $('freeze').classList.remove('show');
+  shooting = false;
+  setStage('download');
+}
 function bindUI() {
+  $('mSaveBtn').addEventListener('click', () => { saveFile(lastShot, `PalmKiln-No${glaze.seed}.png`).then(mobileSaveDone, mobileSaveDone); });
+  $('mNextBtn').addEventListener('click', mobileSaveDone);
   $('film').addEventListener('click', e => { if (e.target.id === 'film' || e.target.classList.contains('soon')) closeFilm(); });
   document.addEventListener('keydown', e => {
     if (e.key === 'Enter') nextStage();
