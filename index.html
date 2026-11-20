@@ -1664,6 +1664,50 @@ function loadScript(src) {
   });
 }
 
+// ---------- MediaPipe Hand Landmarker（手機用）----------
+// 輸出格式轉成跟 ml5 一樣：{ keypoints: [{x, y}] 用影片像素座標, handedness }
+const MP_VER = '0.10.14';
+const MP_BASE = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MP_VER}`;
+const MP_MODEL = 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
+async function mediaPipeHands() {
+  const vision = await import(`${MP_BASE}/vision_bundle.mjs`);
+  dbg('mediapipe loaded');
+  const fileset = await vision.FilesetResolver.forVisionTasks(`${MP_BASE}/wasm`);
+  const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const make = delegate => vision.HandLandmarker.createFromOptions(fileset, {
+    baseOptions: { modelAssetPath: MP_MODEL, delegate },
+    runningMode: 'VIDEO', numHands: 2,
+    minHandDetectionConfidence: 0.5, minHandPresenceConfidence: 0.5, minTrackingConfidence: 0.5,
+  });
+  let lm, used = isIOS ? 'CPU' : 'GPU';
+  try { lm = await make(used); }
+  catch (e) { used = used === 'GPU' ? 'CPU' : 'GPU'; lm = await make(used); }
+  dbg('hand model ready (mediapipe ' + used + ')');
+  return {
+    detectStart(video, cb) {
+      let lastT = -1, busy = false;
+      const loop = () => {
+        requestAnimationFrame(loop);
+        if (busy || video.readyState < 2 || !video.videoWidth) return;
+        const t = performance.now();
+        if (t - lastT < 33) return;   // 大約每秒 30 次
+        lastT = t;
+        busy = true;
+        try {
+          const r = lm.detectForVideo(video, t);
+          const W = video.videoWidth, H = video.videoHeight;
+          cb((r.landmarks || []).map((pts, i) => ({
+            keypoints: pts.map(p => ({ x: p.x * W, y: p.y * H, z: p.z * W })),
+            handedness: r.handednesses && r.handednesses[i] && r.handednesses[i][0] ? r.handednesses[i][0].categoryName : '',
+          })));
+        } catch (e) { dbg('detect err: ' + e.message); }
+        busy = false;
+      };
+      loop();
+    },
+  };
+}
+
 async function enableHands() {
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { cameraBlocked(); return false; }
   try {
@@ -1693,6 +1737,19 @@ async function enableHands() {
   handOn = true;
   setStatus();
   toast('Loading hand tracking…');
+  // 手機：改用 Google MediaPipe 的手部偵測（iPhone Safari 上 ml5 會載入成功但偵測不到手）
+  if (IS_MOBILE) {
+    try {
+      handPose = await mediaPipeHands();
+      handReady = true;
+      setStatus();
+      let nh = -1;
+      handPose.detectStart(v, r => { hands = r; if (DEBUG && r.length !== nh) { nh = r.length; dbg('hands: ' + nh); } });
+      return true;
+    } catch (e) {
+      dbg('mediapipe failed: ' + (e && e.message) + ' → ml5');
+    }
+  }
   try {
     if (!window.ml5) await loadScript(ML5_URL);
     dbg('ml5 loaded');
